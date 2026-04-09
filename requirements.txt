@@ -1,0 +1,19 @@
+# 核心机器学习
+lightgbm>=3.3.0
+scikit-learn>=1.2.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Web服务
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# 流量解析
+scapy>=2.5.0
+python-dotenv>=1.0.0
+
+# 大模型API
+requests>=2.31.0
+
+# 评估工具
+matplotlib>=3.7.0
