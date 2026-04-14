@@ -21,6 +21,7 @@ Python • LightGBM • DeepSeek • Flask • Scapy • Pandas
 ## 快速开始
 
 1. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -28,21 +29,18 @@ pip install -r requirements.txt
 2.命令行模式
 
 ```
-运行
 python realtime_ids_demo.py cli --input ./datasets/test.csv
 ```
 
 3.HTTP 服务模式
 
 ```
-运行
 python realtime_ids_demo.py http --host 0.0.0.0 --port 8000
 ```
 
 4.模型评估
 
 ```bash
-运行
 python evaluate_labeled_flows_csv.py --input ./datasets/labeled.csv --dump-errors
 ```
 
