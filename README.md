@@ -22,29 +22,29 @@ Python • LightGBM • DeepSeek • Flask • Scapy • Pandas
 
 1. 安装依赖
 ```bash
-```pip install -r requirements.txt```
+pip install -r requirements.txt
 
 命令行模式
 
-bash
+```bash
 运行
 python realtime_ids_demo.py cli --input ./datasets/test.csv
 
 HTTP 服务模式
 
-bash
+```bash
 运行
 python realtime_ids_demo.py http --host 0.0.0.0 --port 8000
 模型评估
 
-bash
+```bash
 运行
 python evaluate_labeled_flows_csv.py --input ./datasets/labeled.csv --dump-errors
 
-适用场景
+```适用场景
 Web 入侵检测与异常流量分析
 XSS、SQL 注入、目录扫描、暴力破解识别
-网络安全研究、教学实验、原型验证
+网络安全研究、教学实验、原型验证```
 
 声明
 本项目仅用于网络安全学习与防御研究，请勿用于未经授权的渗透测试或非法行为。
