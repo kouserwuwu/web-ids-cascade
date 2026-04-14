@@ -23,12 +23,14 @@ Python • LightGBM • DeepSeek • Flask • Scapy • Pandas
 1. 安装依赖
 ```bash
 pip install -r requirements.txt
+```
 
 命令行模式
 
-```bash
+```
 运行
 python realtime_ids_demo.py cli --input ./datasets/test.csv
+```
 
 HTTP 服务模式
 
