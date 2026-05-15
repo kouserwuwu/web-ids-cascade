@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+datasets/pcap/  # PCAP 太大，不能传 GitHub
+*.pcap    # 模型文件通常太大，建议单独存放或用 LFS
+*.csv
+/thesis

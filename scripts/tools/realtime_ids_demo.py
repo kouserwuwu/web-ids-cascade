@@ -30,7 +30,6 @@ from ai_defend import (
     prepare_cicids_flows,
     infer_batch,
     SemanticAnalyzer,
-    MockSemanticAnalyzer,
 )
 
 FIXED_LOW = 0.001
@@ -136,7 +135,7 @@ def enrich_malicious_explanations(items: List[Dict], analyzer, batch_size: int =
     return explained
 
 
-def load_pipeline(model_path: str = "models/first_stage_lgbm.pkl"):
+def load_pipeline(model_path: str = "models/first_stage_lgbm_http_web.pkl"):
     """加载一级 LightGBM 模型和二级 DeepSeek/Mock 分析器。"""
     if not os.path.exists(model_path):
         raise FileNotFoundError(
@@ -361,26 +360,31 @@ def flows_from_pcap_windowed(
                 continue
             ts = float(p.time)
 
-            ip, l4 = None, None
-            if hasattr(p, "src") and hasattr(p, "dst"):
-                ip, l4 = p, p.payload
-            elif hasattr(p, "payload"):
-                q = p.payload
-                if hasattr(q, "src") and hasattr(q, "dst"):
-                    ip, l4 = q, q.payload
-            if ip is None or l4 is None:
+            # 强制层级检查，避免 MAC 地址被误认为 IP
+            from scapy.all import IP, TCP
+            if not p.haslayer(IP):
                 continue
 
-            src_ip = getattr(ip, "src", "0.0.0.0")
-            dst_ip = getattr(ip, "dst", "0.0.0.0")
-            proto = getattr(ip, "proto", 0)
-            sport = getattr(l4, "sport", 0)
-            dport = getattr(l4, "dport", 0)
+            ip_layer = p[IP]
+            src_ip = ip_layer.src
+            dst_ip = ip_layer.dst
+            proto = ip_layer.proto
+
+            l4 = None
+            sport = 0
+            dport = 0
+            if p.haslayer(TCP):
+                l4 = p[TCP]
+                sport = l4.sport
+                dport = l4.dport
+            elif hasattr(p, "payload") and hasattr(p.payload, "sport"):
+                l4 = p.payload
+                sport = getattr(l4, "sport", 0)
+                dport = getattr(l4, "dport", 0)
+
             length = int(len(p))
 
-            # 尝试从 TCP payload 抽取 HTTP 证据（用于二级 deepseek 的 SQLi/XSS 语义区分）
-            # 注意：很多 UDP 广播/设备发现报文也会“看起来像 HTTP”（比如包含字符串 "HTTP/"），
-            # 但并不具备 HTTP 请求语义；因此这里强制限定 proto==6(TCP) 才解析。
+            # 尝试从 TCP payload 抽取 HTTP 证据
             http_method = ""
             http_path = ""
             http_query = ""
@@ -390,30 +394,26 @@ def flows_from_pcap_windowed(
             http_sqli_tokens = []
             http_xss_tokens = []
             http_payload_text_fragment = ""
+
             try:
                 payload_b = b""
-                is_tcp = (int(proto) == 6)
-                if is_tcp and hasattr(l4, "payload"):
-                    payload_b = bytes(l4.payload)
+                if proto == 6 and p.haslayer(TCP):
+                    # 提取 TCP 层之后的所有数据
+                    payload_b = bytes(p[TCP].payload)
 
                 if payload_b:
-                    payload_b = payload_b[:2500]
-                    # 直接把 payload 的文本片段攒起来，避免 HTTP 行被拆到多个 TCP 段导致单包匹配失败
+                    # 即使没有完整的 HTTP 结构，也将片段存入 buffer 供后续全局分析
                     http_payload_text_fragment = payload_b.decode("utf-8", errors="ignore")[:500]
-
                     text = payload_b.decode("utf-8", errors="ignore")
                     import re as _re
                     import urllib.parse as _up
 
-                    # 关键词提示：仍交给 deepseek 做最终判断，这里只做弱证据
-                    # 注意 payload 往往是 URL 编码（例如 %3Cscript%3E, sleep%285%29），
-                    # 所以这里同时在“原文”和“解码后”两个版本里做关键词匹配。
                     t_low = text.lower()
                     try:
                         t_low_decoded = _up.unquote_plus(text).lower()
                     except Exception:
                         t_low_decoded = t_low
-                    # 注意：不要把 "/*" "*/" 当作 SQLi 关键词，否则正常 HTTP 头里的 "Accept: */*" 会误触发。
+
                     sqli_keys = [" or ", "select", "union", "sleep(", "benchmark(", "information_schema", "--", "sql syntax", "mysql", "postgres"]
                     xss_keys = ["<script", "onerror=", "onload=", "alert(", "document.cookie", "javascript:", "xss"]
                     for k in sqli_keys:
@@ -427,7 +427,6 @@ def flows_from_pcap_windowed(
                             if len(http_xss_tokens) < 3:
                                 http_xss_tokens.append(k.strip())
 
-                    # 只有文本里“看起来像 HTTP 请求”时才尝试抽取方法/URI
                     if b"HTTP/" in payload_b:
                         m = _re.search(r"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(\S+)\s+HTTP/[\d.]+", text)
                         if m:
@@ -468,6 +467,8 @@ def flows_from_pcap_windowed(
                     "http_sqli_tokens": set(),
                     "http_xss_tokens": set(),
                     "http_text_buffer": "",
+                    "http_404_count": 0,
+                    "http_403_count": 0,
                 }
             b["packet_count"] += 1
             b["byte_count"] += float(length)
@@ -480,6 +481,13 @@ def flows_from_pcap_windowed(
                 buf = b.get("http_text_buffer", "")
                 buf = (buf + http_payload_text_fragment)[-12000:]
                 b["http_text_buffer"] = buf
+
+                # 统计响应状态码（用于判定 Web 枚举的核心证据）
+                import re as _re
+                res_matches = _re.findall(r"HTTP/[\d.]+\s+(404|403)", http_payload_text_fragment, _re.IGNORECASE)
+                for code in res_matches:
+                    if code == "404": b["http_404_count"] += 1
+                    elif code == "403": b["http_403_count"] += 1
 
             if http_method:
                 b["http_methods_seen"].add(http_method)
@@ -543,10 +551,20 @@ def flows_from_pcap_windowed(
             import urllib.parse as _up
 
             text = b.get("http_text_buffer", "") or ""
-            if text and len(b.get("http_req_lines_seen", set())) == 0:
-                matches = _re.findall(r"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(\S+)\s+HTTP/[\d.]+", text)
+            if text:
+                # 统计响应状态码（用于判定 Web 枚举的核心证据）
+                # 匹配 HTTP 响应行，如 "HTTP/1.1 404 Not Found"
+                res_matches = _re.findall(r"HTTP/[\d.]+\s+(404|403)", text, _re.IGNORECASE)
+                for code in res_matches:
+                    if code == "404":
+                        b["http_404_count"] += 1
+                    elif code == "403":
+                        b["http_403_count"] += 1
+
+                # 1. 提取所有可能的 HTTP 请求行
+                matches = _re.findall(r"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(\S+)\s+HTTP/[\d.]+", text, _re.IGNORECASE)
                 for mm in matches[:20]:
-                    mth = mm[0]
+                    mth = mm[0].upper()
                     uri = mm[1]
                     req_line = (mth + " " + uri).strip()
                     if len(b["http_req_lines_seen"]) < 10:
@@ -559,12 +577,21 @@ def flows_from_pcap_windowed(
                     if len(b["http_methods_seen"]) < 5:
                         b["http_methods_seen"].add(mth)
 
+                # 2. 兜底方案：即使请求行不完整，只要有明显的路径模式（如 /admin, /etc/passwd），也计入路径数
+                # 匹配 / 后面跟非空白字符，直到空格或 HTTP/
+                path_matches = _re.findall(r"/\S+?(?=\s|HTTP/|$)", text)
+                for pm in path_matches[:20]:
+                    # 简单过滤掉非路径字符
+                    cleaned_p = pm.split('?')[0].split('#')[0]
+                    if cleaned_p and len(b["http_paths_seen"]) < 20:
+                        b["http_paths_seen"].add(cleaned_p)
+
                 t_low = text.lower()
                 try:
                     t_low_decoded = _up.unquote_plus(text).lower()
                 except Exception:
                     t_low_decoded = t_low
-                # 同上：避免 "Accept: */*" 误判为 SQLi
+
                 sqli_keys = [" or ", "select", "union", "sleep(", "benchmark(", "information_schema", "--"]
                 xss_keys = ["<script", "onerror=", "onload=", "alert(", "document.cookie", "javascript:"]
                 for k in sqli_keys:
@@ -611,6 +638,8 @@ def flows_from_pcap_windowed(
                 "http_has_xss_hint": bool(b.get("http_has_xss_hint", False)),
                 "http_sqli_tokens": list(b.get("http_sqli_tokens", set()))[:3],
                 "http_xss_tokens": list(b.get("http_xss_tokens", set()))[:3],
+                "http_404_count": b.get("http_404_count", 0),
+                "http_403_count": b.get("http_403_count", 0),
             }
         )
 

@@ -94,7 +94,7 @@ def main() -> None:
         raise SystemExit(f"需要 scikit-learn：{e}")
 
     from ai_defend import infer_batch
-    from realtime_ids_demo import FIXED_HIGH, FIXED_LOW, load_pipeline, summarize_deepseek_usage
+    from .realtime_ids_demo import FIXED_HIGH, FIXED_LOW, load_pipeline, summarize_deepseek_usage
 
     low = float(args.low) if args.low is not None else float(FIXED_LOW)
     high = float(args.high) if args.high is not None else float(FIXED_HIGH)
